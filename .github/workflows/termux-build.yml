@@ -29,6 +29,8 @@ jobs:
         run: |
           mkdir build && cd build
           
+          ls -la $(pwd)/1.3.283.0/bin
+          
           # 3. Передаем абсолютный путь напрямую (ЭТО ПОЧИНИТ ВНЕШНИЙ ПРОЕКТ NDK)
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
