@@ -16,8 +16,8 @@ jobs:
           wget -q https://sdk.lunarg.com/sdk/download/1.3.283.0/linux/vulkansdk-linux-x86_64-1.3.283.0.tar.xz
           tar xf vulkansdk-linux-x86_64-1.3.283.0.tar.xz
           
-          # УБРАЛИ /x86_64 в конце пути
-          VULKAN_SDK="$(pwd)/1.3.283.0"
+          # Запоминаем абсолютный путь к SDK
+          VULKAN_SDK="$(pwd)/1.3.283.0/x86_64"
           
           # 1. Добавляем путь в окружение GitHub для будущих шагов
           echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
@@ -28,8 +28,6 @@ jobs:
       - name: Build llama.cpp for Android
         run: |
           mkdir build && cd build
-          
-          ls -la $(pwd)/1.3.283.0/bin
           
           # 3. Передаем абсолютный путь напрямую (ЭТО ПОЧИНИТ ВНЕШНИЙ ПРОЕКТ NDK)
           cmake .. \
