@@ -56,3 +56,4 @@ jobs:
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
+            build/bin/*.so*
