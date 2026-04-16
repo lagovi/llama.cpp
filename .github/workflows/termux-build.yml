@@ -10,17 +10,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Vulkan SDK
-        uses: humbletim/install-vulkan-sdk@v1.2
+      - name: Setup Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.1.1
         with:
-          version: latest
-          cache: true
+          version: 1.3.275.0
+          macOS: false
+
+      - name: Locate glslc and Export
+        run: |
+          # Находим glslc в системе и сохраняем путь
+          GLSLC_PATH=$(which glslc)
+          echo "glslc found exactly at: $GLSLC_PATH"
+          echo "GLSLC_PATH=$GLSLC_PATH" >> $GITHUB_ENV
 
       - name: Build llama.cpp for Android
         run: |
           mkdir build && cd build
           
-          # CMAKE_FIND_ROOT_PATH_MODE_PROGRAM=BOTH - магический флаг, разрешающий брать glslc из системы
+          # Пробиваем песочницу NDK: явно указываем Vulkan_GLSLC_EXECUTABLE
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
@@ -28,11 +35,11 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_VULKAN=ON \
             -DGGML_VULKAN_EMBED_SHADERS=ON \
-            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=BOTH \
+            -DVulkan_GLSLC_EXECUTABLE=$GLSLC_PATH \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
 
-          # Используем все ядра сервера (собирается за 2-3 минуты)
+          # nproc использует все ядра сервера
           make -j$(nproc) llama-cli llama-bench
 
       - name: Upload Artifacts
