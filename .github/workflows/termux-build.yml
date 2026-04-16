@@ -10,12 +10,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Build Tools
+      - name: Install Build Tools (Host)
         run: |
           sudo apt-get update
-          # shaderc предоставляет glslc, который требовал CMake
-          # opencl-headers нужны для сборки OpenCL бекенда
-          sudo apt-get install -y shaderc opencl-headers
+          # glslc для шейдеров, заголовки и библиотеки OpenCL для линковки
+          sudo apt-get install -y shaderc opencl-headers ocl-icd-opencl-dev
+
+      - name: Verify Tools
+        run: |
+          which glslc
+          glslc --version
 
       - name: Build llama.cpp for Android
         run: |
@@ -29,9 +33,11 @@ jobs:
             -DGGML_VULKAN=ON \
             -DGGML_OPENCL=ON \
             -DGGML_VULKAN_EMBED_SHADERS=ON \
+            -DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
 
+          # Используем nproc для максимальной скорости на сервере
           make -j$(nproc) llama-cli llama-bench
 
       - name: Upload Artifacts
@@ -39,5 +45,3 @@ jobs:
         with:
           name: llama-binaries-android
           path: |
-            build/bin/llama-cli
-            build/bin/llama-bench
