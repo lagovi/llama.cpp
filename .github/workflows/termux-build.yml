@@ -16,8 +16,8 @@ jobs:
           wget -q https://sdk.lunarg.com/sdk/download/1.3.283.0/linux/vulkansdk-linux-x86_64-1.3.283.0.tar.xz
           tar xf vulkansdk-linux-x86_64-1.3.283.0.tar.xz
           
-          # Запоминаем абсолютный путь к SDK
-          VULKAN_SDK="$(pwd)/1.3.283.0/x86_64"
+          # УБРАЛИ /x86_64 в конце пути
+          VULKAN_SDK="$(pwd)/1.3.283.0"
           
           # 1. Добавляем путь в окружение GitHub для будущих шагов
           echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
