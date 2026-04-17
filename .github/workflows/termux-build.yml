@@ -10,24 +10,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install OpenCL Headers
-        run: sudo apt-get update && sudo apt-get install -y opencl-headers
+      - name: Prepare OpenCL for Android NDK
+        run: |
+          # 1. Скачиваем заголовки OpenCL
+          git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
+          
+          # 2. Создаем заглушку libOpenCL.so для ARM64 (чтобы линковщик не ругался)
+          # Используем компилятор из NDK
+          NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
+          echo "int clGetPlatformIDs() { return 0; }" > opencl_stub.c
+          $NDK_CLANG -shared -o libOpenCL.so opencl_stub.c
+          
+          echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
+          echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
       - name: Build CLBlast for Android
         run: |
-          git clone https://github.com/CNugteren/CLBlast.git
-          cd CLBlast
-          mkdir build && cd build
+          git clone --depth 1 https://github.com/CNugteren/CLBlast.git
+          cd CLBlast && mkdir build && cd build
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DOPENCL=ON
+            -DOPENCL_INCLUDE_DIRS=$OPENCL_INC_DIR \
+            -DOPENCL_LIBRARIES=$OPENCL_STUB_LIB
           make -j$(nproc)
-          # Сохраняем пути для следующего шага
+          
           echo "CLBLAST_DIR=$(pwd)" >> $GITHUB_ENV
-          echo "CLBLAST_LIB=$(pwd)/libclblast.so" >> $GITHUB_ENV
           echo "CLBLAST_INC=$(pwd)/../include" >> $GITHUB_ENV
 
       - name: Build llama.cpp with CLBlast
@@ -40,7 +50,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CLBLAST=ON \
             -DCLBlast_INCLUDE_DIR=$CLBLAST_INC \
-            -DCLBlast_LIB=$CLBLAST_LIB \
+            -DCLBlast_LIB=$CLBLAST_DIR/libclblast.so \
             -DGGML_OPENMP=OFF \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
