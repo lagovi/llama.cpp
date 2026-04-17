@@ -28,20 +28,26 @@ jobs:
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
           echo "Patching $OCL_FILE"
           
-          # Используем awk, чтобы найти последний #include и вставить макросы строго после него
-          awk '
-            /^#include/ { last_inc = NR }
-            { lines[NR] = $0 }
-            END {
-              for (i = 1; i <= NR; i++) {
-                print lines[i]
-                if (i == last_inc) {
-                  print "#define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))"
-                  print "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS"
-                }
-              }
-            }
-          ' "$OCL_FILE" > tmp_patch.cpp && mv tmp_patch.cpp "$OCL_FILE"
+          python3 -c '
+          import sys
+          file_path = sys.argv[1]
+          with open(file_path, "r") as f:
+              lines = f.readlines()
+          
+          # Вставляем макрос прямо перед ПЕРВЫМ упоминанием функции в коде
+          for i, line in enumerate(lines):
+              if "clCreateBufferWithProperties" in line and "#define" not in line:
+                  lines.insert(i, "#define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))\n")
+                  break
+          
+          for i, line in enumerate(lines):
+              if "clSetContextDestructorCallback" in line and "#define" not in line:
+                  lines.insert(i, "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS\n")
+                  break
+                  
+          with open(file_path, "w") as f:
+              f.writelines(lines)
+          ' "$OCL_FILE"
 
       - name: Build llama.cpp with ggml-opencl
         run: |
