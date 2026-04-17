@@ -1,4 +1,4 @@
-name: Termux Build (ggml-opencl FORCED MALI)
+name: Termux Build (ggml-opencl FORCED MALI - FIXED PATCH)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Checkout code (default branch вашего форка)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Полная история, чтобы короткий SHA работал
+          fetch-depth: 0
 
       - name: Checkout exact commit 9be366d
         run: |
@@ -31,7 +31,7 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl.cpp for Mali-G72 (forced INTEL family + ASSERT bypass)
+      - name: Patch ggml-opencl.cpp for Mali-G72 (force INTEL + bypass TODO: Unknown GPU)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
           echo "Patching $OCL_FILE for commit 9be366d"
@@ -42,11 +42,11 @@ jobs:
           with open(file_path, "r") as f:
               lines = f.readlines()
           
-          # 1. Основной патч: Unsupported GPU → force INTEL family
+          # 1. Форсируем INTEL family + убираем Unsupported GPU
           for i, line in enumerate(lines):
               if "Unsupported GPU:" in line:
-                  lines[i] = lines[i].replace("Unsupported GPU: %s", "Mali-G72 forced as INTEL family")
-                  for j in range(i+1, i+20):
+                  lines[i] = "                  GGML_LOG_ERROR("Mali-G72 forced as INTEL family\\n");\n"
+                  for j in range(i+1, i+30):
                       if "gpu_family = GPU_FAMILY::UNKNOWN" in lines[j] or "backend_ctx->gpu_family = GPU_FAMILY::UNKNOWN" in lines[j]:
                           lines[j] = "                  backend_ctx->gpu_family = GPU_FAMILY::INTEL;\n"
                       if "return nullptr;" in lines[j]:
@@ -54,12 +54,13 @@ jobs:
                           break
                   break
           
-          # 2. Защита от GGML_ASSERT в операциях
+          # 2. Обходим все TODO: Unknown GPU (без вставки sgs, чтобы не было undeclared)
+          patched = 0
           for i, line in enumerate(lines):
-              if "GGML_ASSERT(false && \"Unsupported GPU\")" in line or "GGML_ASSERT(false && \"TODO: Unknown GPU\")" in line:
-                  lines[i] = "                  /* [PATCHED FOR MALI] */ sgs = 32;  // default INTEL safe value\n"
-              if "GGML_ASSERT(false && \"Unsupported GPU\")" in line:
-                  lines[i] = lines[i].replace("GGML_ASSERT(false && \"Unsupported GPU\")", "/* PATCHED MALI */ sgs = 32;")
+              if "GGML_ASSERT(false && \"TODO: Unknown GPU\")" in line or "GGML_ASSERT(false && \"Unsupported GPU\")" in line:
+                  lines[i] = "                  /* [PATCHED FOR MALI - forced INTEL path] */\n"
+                  patched += 1
+          print(f"Patched {patched} Unknown GPU asserts")
           
           with open(file_path, "w") as f:
               f.writelines(lines)
@@ -85,7 +86,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-opencl-forced-mali-9be366d
+          name: llama-opencl-forced-mali-9be366d-FIXED
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
