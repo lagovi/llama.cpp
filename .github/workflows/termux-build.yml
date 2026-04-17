@@ -10,19 +10,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Vulkan Tools
+      - name: Setup Vulkan SDK Tools & Headers
         run: |
-          # Скачиваем только glslc для сборки шейдеров на хосте
+          # Скачиваем полный SDK (там и glslc, и нужный vulkan.hpp)
           wget -q https://sdk.lunarg.com/sdk/download/1.3.283.0/linux/vulkansdk-linux-x86_64-1.3.283.0.tar.xz
           tar xf vulkansdk-linux-x86_64-1.3.283.0.tar.xz
-          echo "GLSLC_PATH=$(pwd)/1.3.283.0/x86_64/bin/glslc" >> $GITHUB_ENV
+          
+          VULKAN_SDK_PATH=$(pwd)/1.3.283.0/x86_64
+          echo "GLSLC_PATH=$VULKAN_SDK_PATH/bin/glslc" >> $GITHUB_ENV
+          echo "VULKAN_INC=$VULKAN_SDK_PATH/include" >> $GITHUB_ENV
+          
+          echo "glslc found at: $VULKAN_SDK_PATH/bin/glslc"
+          echo "Headers found at: $VULKAN_SDK_PATH/include"
 
       - name: Build llama.cpp for Android
         run: |
           mkdir build && cd build
           
-          # Отключаем OpenCL (-DGGML_OPENCL=OFF), чтобы избежать ошибок поиска библиотек
-          # Отключаем OpenMP (-DGGML_OPENMP=OFF), чтобы убрать зависимость от libomp.so
+          # -DVulkan_INCLUDE_DIR передает путь к папке с vulkan/vulkan.hpp
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
@@ -33,17 +38,18 @@ jobs:
             -DGGML_OPENMP=OFF \
             -DGGML_VULKAN_EMBED_SHADERS=ON \
             -DVulkan_GLSLC_EXECUTABLE=$GLSLC_PATH \
+            -DVulkan_INCLUDE_DIR=$VULKAN_INC \
             -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=BOTH \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
 
-          # Сборка
           make -j$(nproc) llama-cli llama-bench
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-vulkan-only
+          name: llama-vulkan-final
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
