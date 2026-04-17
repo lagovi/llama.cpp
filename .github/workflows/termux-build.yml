@@ -1,4 +1,4 @@
-name: Termux Build (OpenCL-CLBlast)
+name: Termux Build (Real-CLBlast)
 
 on:
   workflow_dispatch:
@@ -10,25 +10,37 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install CLBlast and OpenCL Headers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libclblast-dev opencl-headers ocl-icd-opencl-dev
+      - name: Install OpenCL Headers
+        run: sudo apt-get update && sudo apt-get install -y opencl-headers
 
-      - name: Build llama.cpp for Android
+      - name: Build CLBlast for Android
+        run: |
+          git clone https://github.com/CNugteren/CLBlast.git
+          cd CLBlast
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENCL=ON
+          make -j$(nproc)
+          # Сохраняем пути для следующего шага
+          echo "CLBLAST_DIR=$(pwd)" >> $GITHUB_ENV
+          echo "CLBLAST_LIB=$(pwd)/libclblast.so" >> $GITHUB_ENV
+          echo "CLBLAST_INC=$(pwd)/../include" >> $GITHUB_ENV
+
+      - name: Build llama.cpp with CLBlast
         run: |
           mkdir build && cd build
-          
-          # Используем GGML_CLBLAST вместо GGML_VULKAN
-          # Это обеспечит совместимость с OpenCL 2.0 на вашей Mali
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CLBLAST=ON \
-            -DGGML_VULKAN=OFF \
-            -DGGML_OPENCL=OFF \
+            -DCLBlast_INCLUDE_DIR=$CLBLAST_INC \
+            -DCLBlast_LIB=$CLBLAST_LIB \
             -DGGML_OPENMP=OFF \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
@@ -38,8 +50,9 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-clblast-final
+          name: llama-clblast-real
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
             build/bin/*.so*
+            CLBlast/build/libclblast.so*
