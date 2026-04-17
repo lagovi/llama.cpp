@@ -23,10 +23,10 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl (Surgical Source Modification)
+      - name: Patch ggml-opencl (The Ultimate Mali Survival Patch)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
-          echo "Patching $OCL_FILE"
+          echo "Surgical patching $OCL_FILE"
           
           python3 -c '
           import sys, re
@@ -34,42 +34,40 @@ jobs:
           with open(file_path, "r") as f:
               content = f.read()
 
-          # 1. Удаляем вызов clCreateBufferWithProperties (OpenCL 3.0) 
-          # Заменяем на clCreateBuffer (OpenCL 1.0+), удаляя 2-й аргумент (props)
-          # Было: clCreateBufferWithProperties(ctx, props, flags, size, ptr, err)
-          # Стало: clCreateBuffer(ctx, flags, size, ptr, err)
-          content = re.sub(
-              r"clCreateBufferWithProperties\s*\(\s*([^,]+)\s*,\s*[^,]+\s*,", 
-              r"clCreateBuffer(\1,", 
-              content
-          )
+          # 1. Исправляем API OpenCL 3.0 -> 2.0 (как в прошлый раз, проверено)
+          content = re.sub(r"clCreateBufferWithProperties\s*\(\s*([^,]+)\s*,\s*[^,]+\s*,", r"clCreateBuffer(\1,", content)
+          content = re.sub(r"clSetContextDestructorCallback\s*\([^;]+\);", r"(void)0;", content)
 
-          # 2. Удаляем вызов clSetContextDestructorCallback (OpenCL 3.0)
-          # Заменяем всю строку на безопасный (void)0
-          content = re.sub(
-              r"clSetContextDestructorCallback\s*\([^;]+\);", 
-              r"(void)0;", 
-              content
-          )
+          # 2. Маскировка под Intel + Принудительный сброс SIMD для Mali
+          # Находим блок инициализации Intel и заставляем его думать, что у Mali размер группы = 1
+          intel_block = "backend_ctx->gpu_family = GPU_FAMILY::INTEL;"
+          mali_override = intel_block + " if (strstr(dev_ctx->device_name.c_str(), \"Mali\")) { dev_ctx->n_simdgroup = 1; dev_ctx->n_simdwidth = 1; }"
+          content = content.replace(intel_block, mali_override)
+          
+          # 3. Внедряем "Mali Survival Kit" ПРЯМО В ТЕКСТ КЕРНЕЛОВ
+          # Мы заменяем проблемную прагму на набор макросов, которые эмулируют субгруппы
+          survival_kit = """
+          // --- MALI SURVIVAL KIT ---
+          #undef cl_khr_subgroups
+          #define get_sub_group_id() 0
+          #define get_sub_group_local_id() 0
+          #define sub_group_reduce_add(x) (x)
+          #define sub_group_any(x) (x)
+          #define sub_group_all(x) (x)
+          #define N_SIMDGROUP 1
+          #define N_SIMDWIDTH 1
+          #ifndef N_DST
+          #define N_DST 4
+          #endif
+          // -------------------------
+          """
+          
+          # Ищем прагму (она встроена в строку C++) и заменяем её на наш кит
+          content = content.replace("#pragma OPENCL EXTENSION cl_khr_subgroups : enable", survival_kit)
 
-          # 3. Маскировка под Intel (Ваша идея)
-          # Добавляем проверку на Mali в блок определения семейства GPU
-          content = content.replace(
-              "strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
-              "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))"
-          )
-
-          # 4. Эмуляция субгрупп для компилятора кернелов (OpenCL C)
-          # Внедряем макросы прямо в строку параметров компиляции
-          mali_macros = (
-              " -Dcl_khr_subgroups -Dget_sub_group_id()=0 -Dget_sub_group_local_id()=0 "
-              "-Dsub_group_reduce_add(x)=(x) -Dsub_group_any(x)=(x) -Dsub_group_all(x)=(x) "
-              "-DN_SIMDGROUP=1 -DN_SIMDWIDTH=1 -DN_DST=1 "
-          )
-          content = content.replace("-cl-std=CL2.0", "-cl-std=CL2.0 " + mali_macros)
-
-          # 5. Нейтрализация прагмы расширения внутри кода кернелов
-          content = content.replace("cl_khr_subgroups", "cl_khr_subgroups_DISABLED")
+          # 4. Дополнительная маскировка в условии (strstr Intel)
+          content = content.replace("strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
+                                    "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))")
 
           with open(file_path, "w") as f:
               f.write(content)
