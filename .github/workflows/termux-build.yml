@@ -1,4 +1,4 @@
-name: Termux Build (ggml-opencl)
+name: Termux Build (ggml-opencl FORCED MALI)
 
 on:
   workflow_dispatch:
@@ -7,14 +7,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout code (ваш коммит 9be366d)
         uses: actions/checkout@v4
+        with:
+          ref: 9be366d   # <-- фиксируем ваш точный коммит
 
-      - name: Prepare OpenCL for Android NDK
+      - name: Prepare OpenCL Headers + stub for Android NDK
         run: |
           git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
           
-          # Бронебойный grep: ищем любые слова, начинающиеся на "cl" и Заглавную букву
+          # Бронебойный stub (все cl* функции)
           grep -hoP '\bcl[A-Z][a-zA-Z0-9_]+\b' opencl-inc/CL/*.h | sort -u | awk '{print "void "$1"() {}"}' > opencl_stub.c
           
           NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
@@ -23,10 +25,10 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl for Mali compatibility
+      - name: Patch ggml-opencl.cpp for Mali-G72 (forced INTEL family + ASSERT bypass)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
-          echo "Patching $OCL_FILE"
+          echo "Patching $OCL_FILE for commit 9be366d"
           
           python3 -c '
           import sys
@@ -34,32 +36,31 @@ jobs:
           with open(file_path, "r") as f:
               lines = f.readlines()
           
-          # 1. Исправляем проблему OpenCL 3.0 -> 2.0 (clCreateBufferWithProperties)
+          # 1. Основной патч: Unsupported GPU → force INTEL family
           for i, line in enumerate(lines):
-              if "clCreateBufferWithProperties" in line and "#define" not in line:
-                  lines.insert(i, "#define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))\n")
+              if "Unsupported GPU:" in line and "return nullptr" in lines[i+1:i+4]:
+                  # Заменяем весь else-блок
+                  lines[i] = lines[i].replace("Unsupported GPU: %s", "Mali-G72 forced as INTEL family")
+                  for j in range(i+1, i+10):
+                      if "gpu_family = GPU_FAMILY::UNKNOWN" in lines[j]:
+                          lines[j] = "                  backend_ctx->gpu_family = GPU_FAMILY::INTEL;\n"
+                      if "return nullptr;" in lines[j]:
+                          lines[j] = "                  // return nullptr;  // [PATCHED FOR MALI]\n"
+                          break
                   break
+          
+          # 2. Защита от GGML_ASSERT в операциях (rms_norm, group_norm и т.д.)
           for i, line in enumerate(lines):
-              if "clSetContextDestructorCallback" in line and "#define" not in line:
-                  lines.insert(i, "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS\n")
-                  break
-                  
-          # 2. Обходим проверку "Unsupported GPU"
-          # Мы просто заставляем функцию проверки всегда возвращать true (поддерживается)
-          for i, line in enumerate(lines):
-              if "Unsupported GPU" in line:
-                  # Ищем следующую за этим сообщением команду отмены (обычно return false или continue)
-                  for j in range(i + 1, i + 5):
-                      if "return false" in lines[j]:
-                          lines[j] = "return true; // [PATCHED BY ADVISOR]\n"
-                      if "continue" in lines[j]:
-                          lines[j] = "break; // [PATCHED BY ADVISOR]\n"
+              if "GGML_ASSERT(false && \"Unsupported GPU\")" in line or "GGML_ASSERT(false && \"TODO: Unknown GPU\")" in line:
+                  lines[i] = "                  /* [PATCHED FOR MALI] */ sgs = 32;  // default INTEL safe value\n"
+              if "GGML_ASSERT(false && \"Unsupported GPU\")" in line:
+                  lines[i] = lines[i].replace("GGML_ASSERT(false && \"Unsupported GPU\")", "/* PATCHED MALI */ sgs = 32;")
           
           with open(file_path, "w") as f:
               f.writelines(lines)
           ' "$OCL_FILE"
 
-      - name: Build llama.cpp with ggml-opencl
+      - name: Build llama.cpp with ggml-opencl (forced Mali)
         run: |
           mkdir build && cd build
           cmake .. \
@@ -77,9 +78,9 @@ jobs:
           make -j$(nproc) llama-cli llama-bench
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/checkout@v4
         with:
-          name: llama-opencl-final
+          name: llama-opencl-forced-mali-9be366d
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
