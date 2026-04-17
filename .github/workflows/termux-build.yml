@@ -12,24 +12,24 @@ jobs:
 
       - name: Prepare OpenCL for Android NDK
         run: |
-          # 1. Скачиваем официальные заголовки
+          # 1. Скачиваем официальные заголовки (они нужны только для CMake CLBlast)
           git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
           
-          # 2. Генерируем "Полную заглушку" OpenCL со всеми стандартными функциями
+          # 2. Генерируем "Пустышку" без инклудов. Линковщику нужны только ИМЕНА функций.
           cat <<EOF > opencl_stub.c
-          #include <CL/cl.h>
-          #define STUB(name) int name() { return 0; }
-          STUB(clGetPlatformIDs) STUB(clGetPlatformInfo) STUB(clGetDeviceIDs) STUB(clGetDeviceInfo)
-          STUB(clCreateContext) STUB(clReleaseContext) STUB(clCreateCommandQueue) STUB(clReleaseCommandQueue)
-          STUB(clCreateBuffer) STUB(clReleaseMemObject) STUB(clGetMemObjectInfo) STUB(clCreateProgramWithSource)
-          STUB(clCreateProgramWithBinary) STUB(clReleaseProgram) STUB(clBuildProgram) STUB(clGetProgramBuildInfo)
-          STUB(clCreateKernel) STUB(clReleaseKernel) STUB(clSetKernelArg) STUB(clEnqueueNDRangeKernel)
-          STUB(clWaitForEvents) STUB(clReleaseEvent) STUB(clFinish) STUB(clFlush) STUB(clGetEventProfilingInfo)
-          STUB(clGetProgramInfo) STUB(clGetKernelWorkGroupInfo) STUB(clEnqueueReadBuffer) STUB(clEnqueueWriteBuffer)
-          STUB(clCreateSampler) STUB(clReleaseSampler) STUB(clEnqueueCopyBuffer) STUB(clCreateImage)
+          void clGetPlatformIDs() {} void clGetPlatformInfo() {} void clGetDeviceIDs() {} void clGetDeviceInfo() {}
+          void clCreateContext() {} void clReleaseContext() {} void clCreateCommandQueue() {} void clReleaseCommandQueue() {}
+          void clCreateBuffer() {} void clReleaseMemObject() {} void clGetMemObjectInfo() {} void clCreateProgramWithSource() {}
+          void clCreateProgramWithBinary() {} void clReleaseProgram() {} void clBuildProgram() {} void clGetProgramBuildInfo() {}
+          void clCreateKernel() {} void clReleaseKernel() {} void clSetKernelArg() {} void clEnqueueNDRangeKernel() {}
+          void clWaitForEvents() {} void clReleaseEvent() {} void clFinish() {} void clFlush() {} void clGetEventProfilingInfo() {}
+          void clGetProgramInfo() {} void clGetKernelWorkGroupInfo() {} void clEnqueueReadBuffer() {} void clEnqueueWriteBuffer() {}
+          void clCreateSampler() {} void clReleaseSampler() {} void clEnqueueCopyBuffer() {} void clCreateImage() {}
+          void clGetCommandQueueInfo() {} void clGetEventInfo() {} void clGetKernelInfo() {}
+          void clRetainEvent() {} void clGetImageInfo() {} void clRetainMemObject() {} void clEnqueueMapBuffer() {}
           EOF
           
-          # Компилируем заглушку под ARM64
+          # Компилируем заглушку под ARM64 (ошибок не будет, так как синтаксис чистого Си)
           NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
           $NDK_CLANG -shared -fPIC -o libOpenCL.so opencl_stub.c
           
