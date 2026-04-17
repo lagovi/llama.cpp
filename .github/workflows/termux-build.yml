@@ -1,4 +1,4 @@
-name: Termux Build (ggml-opencl FORCED MALI - FIXED PATCH)
+name: Termux Build (ggml-opencl)
 
 on:
   workflow_dispatch:
@@ -7,22 +7,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code (default branch вашего форка)
+      - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Checkout exact commit 9be366d
-        run: |
-          git fetch origin 9be366d --depth=1 || true
-          git checkout 9be366d
-          echo "Checked out commit:"
-          git log -1 --oneline
-
-      - name: Prepare OpenCL Headers + stub for Android NDK
+      - name: Prepare OpenCL for Android NDK
         run: |
           git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
           
+          # Бронебойный grep: ищем любые слова, начинающиеся на "cl" и Заглавную букву
           grep -hoP '\bcl[A-Z][a-zA-Z0-9_]+\b' opencl-inc/CL/*.h | sort -u | awk '{print "void "$1"() {}"}' > opencl_stub.c
           
           NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
@@ -31,10 +23,10 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl.cpp for Mali-G72 (force INTEL + bypass TODO: Unknown GPU)
+      - name: Patch ggml-opencl for Mali compatibility (Spoof Intel)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
-          echo "Patching $OCL_FILE for commit 9be366d"
+          echo "Patching $OCL_FILE"
           
           python3 -c '
           import sys
@@ -42,38 +34,38 @@ jobs:
           with open(file_path, "r") as f:
               lines = f.readlines()
           
-          # 1. Форсируем INTEL family + убираем Unsupported GPU
+          # 1. Даунгрейд OpenCL 3.0 -> 2.0 (чтобы не было ошибок линковщика)
           for i, line in enumerate(lines):
-              if "Unsupported GPU:" in line:
-                  lines[i] = "                  GGML_LOG_ERROR("Mali-G72 forced as INTEL family\\n");\n"
-                  for j in range(i+1, i+30):
-                      if "gpu_family = GPU_FAMILY::UNKNOWN" in lines[j] or "backend_ctx->gpu_family = GPU_FAMILY::UNKNOWN" in lines[j]:
-                          lines[j] = "                  backend_ctx->gpu_family = GPU_FAMILY::INTEL;\n"
-                      if "return nullptr;" in lines[j]:
-                          lines[j] = "                  // return nullptr;  // [PATCHED FOR MALI]\n"
-                          break
+              if "clCreateBufferWithProperties" in line and "#define" not in line:
+                  lines.insert(i, "#define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))\n")
                   break
-          
-          # 2. Обходим все TODO: Unknown GPU (без вставки sgs, чтобы не было undeclared)
-          patched = 0
           for i, line in enumerate(lines):
-              if "GGML_ASSERT(false && \"TODO: Unknown GPU\")" in line or "GGML_ASSERT(false && \"Unsupported GPU\")" in line:
-                  lines[i] = "                  /* [PATCHED FOR MALI - forced INTEL path] */\n"
-                  patched += 1
-          print(f"Patched {patched} Unknown GPU asserts")
+              if "clSetContextDestructorCallback" in line and "#define" not in line:
+                  lines.insert(i, "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS\n")
+                  break
+                  
+          # 2. Маскируем Mali под Intel (идея пользователя)
+          for i, line in enumerate(lines):
+              if "strstr(dev_ctx->device_name.c_str(), \"Intel\")" in line:
+                  lines[i] = line.replace("\"Intel\"", "\"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"")
+                  print("✅ Patched: Mali spoofed as Intel!")
+                  break
           
           with open(file_path, "w") as f:
               f.writelines(lines)
           ' "$OCL_FILE"
 
-      - name: Build llama.cpp with ggml-opencl (forced Mali)
+      - name: Build llama.cpp with ggml-opencl
         run: |
           mkdir build && cd build
+          
+          # Добавляем CL_TARGET_OPENCL_VERSION=200 на всякий случай
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-DCL_TARGET_OPENCL_VERSION=200" \
             -DGGML_OPENCL=ON \
             -DGGML_OPENCL_USE_ADRENO_KERNELS=OFF \
             -DOpenCL_INCLUDE_DIR=$OPENCL_INC_DIR \
@@ -81,12 +73,13 @@ jobs:
             -DGGML_OPENMP=OFF \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
+            
           make -j$(nproc) llama-cli llama-bench
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-opencl-forced-mali-9be366d-FIXED
+          name: llama-opencl-final
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
