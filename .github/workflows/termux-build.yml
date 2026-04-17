@@ -1,4 +1,4 @@
-name: Termux Build (Vulkan)
+name: Termux Build (OpenCL-CLBlast)
 
 on:
   workflow_dispatch:
@@ -10,37 +10,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Vulkan SDK Tools & Headers
+      - name: Install CLBlast and OpenCL Headers
         run: |
-          # Скачиваем полный SDK (там и glslc, и нужный vulkan.hpp)
-          wget -q https://sdk.lunarg.com/sdk/download/1.3.283.0/linux/vulkansdk-linux-x86_64-1.3.283.0.tar.xz
-          tar xf vulkansdk-linux-x86_64-1.3.283.0.tar.xz
-          
-          VULKAN_SDK_PATH=$(pwd)/1.3.283.0/x86_64
-          echo "GLSLC_PATH=$VULKAN_SDK_PATH/bin/glslc" >> $GITHUB_ENV
-          echo "VULKAN_INC=$VULKAN_SDK_PATH/include" >> $GITHUB_ENV
-          
-          echo "glslc found at: $VULKAN_SDK_PATH/bin/glslc"
-          echo "Headers found at: $VULKAN_SDK_PATH/include"
+          sudo apt-get update
+          sudo apt-get install -y libclblast-dev opencl-headers ocl-icd-opencl-dev
 
       - name: Build llama.cpp for Android
         run: |
           mkdir build && cd build
           
-          # -DVulkan_INCLUDE_DIR передает путь к папке с vulkan/vulkan.hpp
+          # Используем GGML_CLBLAST вместо GGML_VULKAN
+          # Это обеспечит совместимость с OpenCL 2.0 на вашей Mali
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_VULKAN=ON \
+            -DGGML_CLBLAST=ON \
+            -DGGML_VULKAN=OFF \
             -DGGML_OPENCL=OFF \
             -DGGML_OPENMP=OFF \
-            -DGGML_VULKAN_EMBED_SHADERS=ON \
-            -DVulkan_GLSLC_EXECUTABLE=$GLSLC_PATH \
-            -DVulkan_INCLUDE_DIR=$VULKAN_INC \
-            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=BOTH \
-            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
 
@@ -49,7 +38,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-vulkan-final
+          name: llama-clblast-final
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
