@@ -12,14 +12,26 @@ jobs:
 
       - name: Prepare OpenCL for Android NDK
         run: |
-          # 1. Скачиваем заголовки OpenCL
+          # 1. Скачиваем официальные заголовки
           git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
           
-          # 2. Создаем заглушку libOpenCL.so для ARM64 (чтобы линковщик не ругался)
-          # Используем компилятор из NDK
+          # 2. Генерируем "Полную заглушку" OpenCL со всеми стандартными функциями
+          cat <<EOF > opencl_stub.c
+          #include <CL/cl.h>
+          #define STUB(name) int name() { return 0; }
+          STUB(clGetPlatformIDs) STUB(clGetPlatformInfo) STUB(clGetDeviceIDs) STUB(clGetDeviceInfo)
+          STUB(clCreateContext) STUB(clReleaseContext) STUB(clCreateCommandQueue) STUB(clReleaseCommandQueue)
+          STUB(clCreateBuffer) STUB(clReleaseMemObject) STUB(clGetMemObjectInfo) STUB(clCreateProgramWithSource)
+          STUB(clCreateProgramWithBinary) STUB(clReleaseProgram) STUB(clBuildProgram) STUB(clGetProgramBuildInfo)
+          STUB(clCreateKernel) STUB(clReleaseKernel) STUB(clSetKernelArg) STUB(clEnqueueNDRangeKernel)
+          STUB(clWaitForEvents) STUB(clReleaseEvent) STUB(clFinish) STUB(clFlush) STUB(clGetEventProfilingInfo)
+          STUB(clGetProgramInfo) STUB(clGetKernelWorkGroupInfo) STUB(clEnqueueReadBuffer) STUB(clEnqueueWriteBuffer)
+          STUB(clCreateSampler) STUB(clReleaseSampler) STUB(clEnqueueCopyBuffer) STUB(clCreateImage)
+          EOF
+          
+          # Компилируем заглушку под ARM64
           NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
-          echo "int clGetPlatformIDs() { return 0; }" > opencl_stub.c
-          $NDK_CLANG -shared -o libOpenCL.so opencl_stub.c
+          $NDK_CLANG -shared -fPIC -o libOpenCL.so opencl_stub.c
           
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
