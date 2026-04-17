@@ -23,7 +23,7 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl (Robust Mali Support)
+      - name: Patch ggml-opencl (Surgical Source Modification)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
           echo "Patching $OCL_FILE"
@@ -33,31 +33,43 @@ jobs:
           file_path = sys.argv[1]
           with open(file_path, "r") as f:
               content = f.read()
-          
-          # 1. Вставка макросов совместимости OpenCL 2.0 ПОСЛЕ всех инклудов
-          # Ищем последний #include в начале файла
-          patch_code = "\n\n// --- MALI OPENCL 2.0 COMPAT PATCH ---\n"
-          patch_code += "#define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))\n"
-          patch_code += "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS\n"
-          patch_code += "// ------------------------------------\n\n"
-          
-          # Вставляем после последнего инклуда
-          content = re.sub(r"(#include.*?\n)(?!#include)", r"\1" + patch_code, content, count=1)
 
-          # 2. Маскировка Mali под Intel (для прохождения проверок в коде)
-          content = content.replace("strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
-                                    "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))")
+          # 1. Удаляем вызов clCreateBufferWithProperties (OpenCL 3.0) 
+          # Заменяем на clCreateBuffer (OpenCL 1.0+), удаляя 2-й аргумент (props)
+          # Было: clCreateBufferWithProperties(ctx, props, flags, size, ptr, err)
+          # Стало: clCreateBuffer(ctx, flags, size, ptr, err)
+          content = re.sub(
+              r"clCreateBufferWithProperties\s*\(\s*([^,]+)\s*,\s*[^,]+\s*,", 
+              r"clCreateBuffer(\1,", 
+              content
+          )
 
-          # 3. Инъекция макросов эмуляции субгрупп в параметры компилятора кернелов
-          mali_macros = (" -Dcl_khr_subgroups -Dget_sub_group_id()=0 -Dget_sub_group_local_id()=0 "
-                         "-Dsub_group_reduce_add(x)=(x) -Dsub_group_any(x)=(x) -Dsub_group_all(x)=(x) "
-                         "-DN_SIMDGROUP=1 -DN_SIMDWIDTH=1 -DN_DST=1 ")
-          
+          # 2. Удаляем вызов clSetContextDestructorCallback (OpenCL 3.0)
+          # Заменяем всю строку на безопасный (void)0
+          content = re.sub(
+              r"clSetContextDestructorCallback\s*\([^;]+\);", 
+              r"(void)0;", 
+              content
+          )
+
+          # 3. Маскировка под Intel (Ваша идея)
+          # Добавляем проверку на Mali в блок определения семейства GPU
+          content = content.replace(
+              "strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
+              "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))"
+          )
+
+          # 4. Эмуляция субгрупп для компилятора кернелов (OpenCL C)
+          # Внедряем макросы прямо в строку параметров компиляции
+          mali_macros = (
+              " -Dcl_khr_subgroups -Dget_sub_group_id()=0 -Dget_sub_group_local_id()=0 "
+              "-Dsub_group_reduce_add(x)=(x) -Dsub_group_any(x)=(x) -Dsub_group_all(x)=(x) "
+              "-DN_SIMDGROUP=1 -DN_SIMDWIDTH=1 -DN_DST=1 "
+          )
           content = content.replace("-cl-std=CL2.0", "-cl-std=CL2.0 " + mali_macros)
 
-          # 4. Нейтрализация прагмы расширения в исходниках самих кернелов
-          # Мы просто переименовываем расширение, чтобы прагма стала безобидной
-          content = content.replace("cl_khr_subgroups", "cl_khr_subgroups_DISABLED_BY_PATCH")
+          # 5. Нейтрализация прагмы расширения внутри кода кернелов
+          content = content.replace("cl_khr_subgroups", "cl_khr_subgroups_DISABLED")
 
           with open(file_path, "w") as f:
               f.write(content)
