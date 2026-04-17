@@ -7,16 +7,22 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code (ваш коммит 9be366d)
+      - name: Checkout code (default branch вашего форка)
         uses: actions/checkout@v4
         with:
-          ref: 9be366d   # <-- фиксируем ваш точный коммит
+          fetch-depth: 0   # Полная история, чтобы короткий SHA работал
+
+      - name: Checkout exact commit 9be366d
+        run: |
+          git fetch origin 9be366d --depth=1 || true
+          git checkout 9be366d
+          echo "Checked out commit:"
+          git log -1 --oneline
 
       - name: Prepare OpenCL Headers + stub for Android NDK
         run: |
           git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
           
-          # Бронебойный stub (все cl* функции)
           grep -hoP '\bcl[A-Z][a-zA-Z0-9_]+\b' opencl-inc/CL/*.h | sort -u | awk '{print "void "$1"() {}"}' > opencl_stub.c
           
           NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
@@ -38,18 +44,17 @@ jobs:
           
           # 1. Основной патч: Unsupported GPU → force INTEL family
           for i, line in enumerate(lines):
-              if "Unsupported GPU:" in line and "return nullptr" in lines[i+1:i+4]:
-                  # Заменяем весь else-блок
+              if "Unsupported GPU:" in line:
                   lines[i] = lines[i].replace("Unsupported GPU: %s", "Mali-G72 forced as INTEL family")
-                  for j in range(i+1, i+10):
-                      if "gpu_family = GPU_FAMILY::UNKNOWN" in lines[j]:
+                  for j in range(i+1, i+20):
+                      if "gpu_family = GPU_FAMILY::UNKNOWN" in lines[j] or "backend_ctx->gpu_family = GPU_FAMILY::UNKNOWN" in lines[j]:
                           lines[j] = "                  backend_ctx->gpu_family = GPU_FAMILY::INTEL;\n"
                       if "return nullptr;" in lines[j]:
                           lines[j] = "                  // return nullptr;  // [PATCHED FOR MALI]\n"
                           break
                   break
           
-          # 2. Защита от GGML_ASSERT в операциях (rms_norm, group_norm и т.д.)
+          # 2. Защита от GGML_ASSERT в операциях
           for i, line in enumerate(lines):
               if "GGML_ASSERT(false && \"Unsupported GPU\")" in line or "GGML_ASSERT(false && \"TODO: Unknown GPU\")" in line:
                   lines[i] = "                  /* [PATCHED FOR MALI] */ sgs = 32;  // default INTEL safe value\n"
@@ -78,7 +83,7 @@ jobs:
           make -j$(nproc) llama-cli llama-bench
 
       - name: Upload Artifacts
-        uses: actions/checkout@v4
+        uses: actions/upload-artifact@v4
         with:
           name: llama-opencl-forced-mali-9be366d
           path: |
