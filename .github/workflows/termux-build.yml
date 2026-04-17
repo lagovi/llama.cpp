@@ -1,4 +1,4 @@
-name: Termux Build (Real-CLBlast)
+name: Termux Build (ggml-opencl)
 
 on:
   workflow_dispatch:
@@ -14,21 +14,8 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
           
-          # Добавлены clRetainCommandQueue и смежные функции "про запас"
-          cat <<EOF > opencl_stub.c
-          void clGetPlatformIDs() {} void clGetPlatformInfo() {} void clGetDeviceIDs() {} void clGetDeviceInfo() {}
-          void clCreateContext() {} void clReleaseContext() {} void clCreateCommandQueue() {} void clReleaseCommandQueue() {}
-          void clCreateBuffer() {} void clReleaseMemObject() {} void clGetMemObjectInfo() {} void clCreateProgramWithSource() {}
-          void clCreateProgramWithBinary() {} void clReleaseProgram() {} void clBuildProgram() {} void clGetProgramBuildInfo() {}
-          void clCreateKernel() {} void clReleaseKernel() {} void clSetKernelArg() {} void clEnqueueNDRangeKernel() {}
-          void clWaitForEvents() {} void clReleaseEvent() {} void clFinish() {} void clFlush() {} void clGetEventProfilingInfo() {}
-          void clGetProgramInfo() {} void clGetKernelWorkGroupInfo() {} void clEnqueueReadBuffer() {} void clEnqueueWriteBuffer() {}
-          void clCreateSampler() {} void clReleaseSampler() {} void clEnqueueCopyBuffer() {} void clCreateImage() {}
-          void clGetCommandQueueInfo() {} void clGetEventInfo() {} void clGetKernelInfo() {}
-          void clRetainEvent() {} void clGetImageInfo() {} void clRetainMemObject() {} void clEnqueueMapBuffer() {}
-          void clRetainCommandQueue() {} void clRetainContext() {} void clRetainProgram() {} void clRetainKernel() {}
-          void clEnqueueUnmapMemObject() {} void clGetContextInfo() {}
-          EOF
+          # Автоматически генерируем заглушку со ВСЕМИ функциями OpenCL (до 3.0 включительно)
+          grep -hoP 'CL_API_CALL \K(cl[a-zA-Z0-9_]+)' opencl-inc/CL/*.h | sort -u | awk '{print "void "$1"() {}"}' > opencl_stub.c
           
           NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
           $NDK_CLANG -shared -fPIC -o libOpenCL.so opencl_stub.c
@@ -36,34 +23,25 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Build CLBlast for Android
+      - name: Patch ggml-opencl for OpenCL 2.0 compatibility
         run: |
-          git clone --depth 1 https://github.com/CNugteren/CLBlast.git
-          cd CLBlast && mkdir build && cd build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-29 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOPENCL_INCLUDE_DIRS=$OPENCL_INC_DIR \
-            -DOPENCL_LIBRARIES=$OPENCL_STUB_LIB
-          make -j$(nproc)
+          # Ищем файл бэкенда (обычно это ggml/src/ggml-opencl/ggml-opencl.cpp)
+          OCL_FILE=$(find . -name "ggml-opencl.cpp")
+          echo "Patching $OCL_FILE"
           
-          echo "CLBLAST_DIR=$(pwd)" >> $GITHUB_ENV
-          echo "CLBLAST_INC=$(pwd)/../include" >> $GITHUB_ENV
+          # Даунгрейд функций OpenCL 3.0 до 2.0 прямо в коде через макросы
+          sed -i '1i #define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) clCreateBuffer(ctx, flags, size, ptr, err)' $OCL_FILE
+          sed -i '1i #define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS' $OCL_FILE
 
-      - name: Build llama.cpp with CLBlast
+      - name: Build llama.cpp with ggml-opencl
         run: |
           mkdir build && cd build
-          # Передаем пути OpenCL и в llama.cpp тоже, чтобы он не искал их сам
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_CLBLAST=ON \
-            -DCLBlast_INCLUDE_DIR=$CLBLAST_INC \
-            -DCLBlast_LIBRARY=$CLBLAST_DIR/libclblast.so \
+            -DGGML_OPENCL=ON \
             -DOpenCL_INCLUDE_DIR=$OPENCL_INC_DIR \
             -DOpenCL_LIBRARY=$OPENCL_STUB_LIB \
             -DGGML_OPENMP=OFF \
@@ -75,9 +53,8 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-clblast-real
+          name: llama-opencl-final
           path: |
             build/bin/llama-cli
             build/bin/llama-bench
             build/bin/*.so*
-            CLBlast/build/libclblast.so*
