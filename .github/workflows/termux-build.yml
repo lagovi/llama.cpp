@@ -23,7 +23,7 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl for OpenCL 2.0 compatibility
+      - name: Patch ggml-opencl for Mali compatibility
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
           echo "Patching $OCL_FILE"
@@ -34,17 +34,27 @@ jobs:
           with open(file_path, "r") as f:
               lines = f.readlines()
           
-          # Вставляем макрос прямо перед ПЕРВЫМ упоминанием функции в коде
+          # 1. Исправляем проблему OpenCL 3.0 -> 2.0 (clCreateBufferWithProperties)
           for i, line in enumerate(lines):
               if "clCreateBufferWithProperties" in line and "#define" not in line:
                   lines.insert(i, "#define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))\n")
                   break
-          
           for i, line in enumerate(lines):
               if "clSetContextDestructorCallback" in line and "#define" not in line:
                   lines.insert(i, "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS\n")
                   break
                   
+          # 2. Обходим проверку "Unsupported GPU"
+          # Мы просто заставляем функцию проверки всегда возвращать true (поддерживается)
+          for i, line in enumerate(lines):
+              if "Unsupported GPU" in line:
+                  # Ищем следующую за этим сообщением команду отмены (обычно return false или continue)
+                  for j in range(i + 1, i + 5):
+                      if "return false" in lines[j]:
+                          lines[j] = "return true; // [PATCHED BY ADVISOR]\n"
+                      if "continue" in lines[j]:
+                          lines[j] = "break; // [PATCHED BY ADVISOR]\n"
+          
           with open(file_path, "w") as f:
               f.writelines(lines)
           ' "$OCL_FILE"
@@ -58,12 +68,12 @@ jobs:
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_OPENCL=ON \
+            -DGGML_OPENCL_USE_ADRENO_KERNELS=OFF \
             -DOpenCL_INCLUDE_DIR=$OPENCL_INC_DIR \
             -DOpenCL_LIBRARY=$OPENCL_STUB_LIB \
             -DGGML_OPENMP=OFF \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
-
           make -j$(nproc) llama-cli llama-bench
 
       - name: Upload Artifacts
