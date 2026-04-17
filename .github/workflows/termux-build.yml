@@ -1,4 +1,29 @@
-- name: Patch ggml-opencl for Mali Survival Mode
+name: Termux Build (ggml-opencl)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare OpenCL for Android NDK
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
+          
+          # Бронебойный grep: ищем любые слова, начинающиеся на "cl" и Заглавную букву
+          grep -hoP '\bcl[A-Z][a-zA-Z0-9_]+\b' opencl-inc/CL/*.h | sort -u | awk '{print "void "$1"() {}"}' > opencl_stub.c
+          
+          NDK_CLANG=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
+          $NDK_CLANG -shared -fPIC -o libOpenCL.so opencl_stub.c
+          
+          echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
+          echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
+
+      - name: Patch ggml-opencl for Mali Survival Mode
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
           echo "Patching $OCL_FILE"
@@ -40,3 +65,33 @@
           with open(file_path, "w") as f:
               f.writelines(lines)
           ' "$OCL_FILE"
+
+      - name: Build llama.cpp with ggml-opencl
+        run: |
+          mkdir build && cd build
+          
+          # Добавляем CL_TARGET_OPENCL_VERSION=200 на всякий случай
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-DCL_TARGET_OPENCL_VERSION=200" \
+            -DGGML_OPENCL=ON \
+            -DGGML_OPENCL_USE_ADRENO_KERNELS=OFF \
+            -DOpenCL_INCLUDE_DIR=$OPENCL_INC_DIR \
+            -DOpenCL_LIBRARY=$OPENCL_STUB_LIB \
+            -DGGML_OPENMP=OFF \
+            -DLLAMA_BUILD_EXAMPLES=ON \
+            -DLLAMA_BUILD_TESTS=OFF
+            
+          make -j$(nproc) llama-cli llama-bench
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-opencl-final
+          path: |
+            build/bin/llama-cli
+            build/bin/llama-bench
+            build/bin/*.so*
