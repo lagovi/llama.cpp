@@ -23,10 +23,10 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl (The Ultimate Mali Survival Patch)
+      - name: Patch ggml-opencl (Surgical & Clean)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
-          echo "Surgical patching $OCL_FILE"
+          echo "Patching $OCL_FILE"
           
           python3 -c '
           import sys, re
@@ -34,40 +34,31 @@ jobs:
           with open(file_path, "r") as f:
               content = f.read()
 
-          # 1. Исправляем API OpenCL 3.0 -> 2.0 (как в прошлый раз, проверено)
+          # 1. API Downgrade (OpenCL 3.0 -> 1.2/2.0)
+          # Заменяем вызов на стандартный clCreateBuffer, удаляя аргумент props
           content = re.sub(r"clCreateBufferWithProperties\s*\(\s*([^,]+)\s*,\s*[^,]+\s*,", r"clCreateBuffer(\1,", content)
+          # Убираем деструктор
           content = re.sub(r"clSetContextDestructorCallback\s*\([^;]+\);", r"(void)0;", content)
 
-          # 2. Маскировка под Intel + Принудительный сброс SIMD для Mali
-          # Находим блок инициализации Intel и заставляем его думать, что у Mali размер группы = 1
-          intel_block = "backend_ctx->gpu_family = GPU_FAMILY::INTEL;"
-          mali_override = intel_block + " if (strstr(dev_ctx->device_name.c_str(), \"Mali\")) { dev_ctx->n_simdgroup = 1; dev_ctx->n_simdwidth = 1; }"
-          content = content.replace(intel_block, mali_override)
-          
-          # 3. Внедряем "Mali Survival Kit" ПРЯМО В ТЕКСТ КЕРНЕЛОВ
-          # Мы заменяем проблемную прагму на набор макросов, которые эмулируют субгруппы
-          survival_kit = """
-          // --- MALI SURVIVAL KIT ---
-          #undef cl_khr_subgroups
-          #define get_sub_group_id() 0
-          #define get_sub_group_local_id() 0
-          #define sub_group_reduce_add(x) (x)
-          #define sub_group_any(x) (x)
-          #define sub_group_all(x) (x)
-          #define N_SIMDGROUP 1
-          #define N_SIMDWIDTH 1
-          #ifndef N_DST
-          #define N_DST 4
-          #endif
-          // -------------------------
-          """
-          
-          # Ищем прагму (она встроена в строку C++) и заменяем её на наш кит
-          content = content.replace("#pragma OPENCL EXTENSION cl_khr_subgroups : enable", survival_kit)
+          # 2. Маскировка под Intel (Ваша идея)
+          content = content.replace("strstr(dev_ctx->device_name.c_str(), \"Intel\")", "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))")
 
-          # 4. Дополнительная маскировка в условии (strstr Intel)
-          content = content.replace("strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
-                                    "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))")
+          # 3. Kernel Survival Kit (Эмуляция субгрупп для Mali)
+          # Эти макросы закроют все ошибки "undeclared identifier", которые выдавал драйвер Mali
+          survival_kit = (
+              "\\n"
+              "#define get_sub_group_id() 0\\n"
+              "#define get_sub_group_local_id() 0\\n"
+              "#define sub_group_reduce_add(x) (x)\\n"
+              "#define sub_group_any(x) (x)\\n"
+              "#define sub_group_all(x) (x)\\n"
+              "#define N_SIMDGROUP 1\\n"
+              "#define N_SIMDWIDTH 32\\n"
+              "#define N_DST 4\\n"
+              "// Прагма отключена патчем: \\n"
+          )
+          
+          content = content.replace("#pragma OPENCL EXTENSION cl_khr_subgroups : enable", survival_kit)
 
           with open(file_path, "w") as f:
               f.write(content)
