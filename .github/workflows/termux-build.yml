@@ -23,48 +23,41 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch ggml-opencl (Safe Header Injection)
+      - name: Patch ggml-opencl (Robust Mali Support)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
           echo "Patching $OCL_FILE"
           
           python3 -c '
-          import sys
+          import sys, re
           file_path = sys.argv[1]
           with open(file_path, "r") as f:
-              lines = f.readlines()
+              content = f.read()
           
-          # 1. Находим последний #include, чтобы вставить макросы ПОСЛЕ него
-          last_inc = 0
-          for i, line in enumerate(lines):
-              if line.strip().startswith("#include"):
-                  last_inc = i
+          # 1. Вставка макросов совместимости OpenCL 2.0 ПОСЛЕ всех инклудов
+          # Ищем последний #include в начале файла
+          patch_code = "\n\n// --- MALI OPENCL 2.0 COMPAT PATCH ---\n"
+          patch_code += "#define clCreateBufferWithProperties(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))\n"
+          patch_code += "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS\n"
+          patch_code += "// ------------------------------------\n\n"
           
-          # Вставляем наши определения сразу после инклудов
-          lines.insert(last_inc + 1, "\n// --- MALI EMULATION PATCH ---\n")
-          lines.insert(last_inc + 2, "#define clCreateBuffer_Emulated(ctx, props, flags, size, ptr, err) ((void)(props), clCreateBuffer(ctx, flags, size, ptr, err))\n")
-          lines.insert(last_inc + 3, "#define clSetContextDestructorCallback(ctx, cb, data) CL_SUCCESS\n")
-          lines.insert(last_inc + 4, "// ---------------------------\n\n")
-          
-          content = "".join(lines)
+          # Вставляем после последнего инклуда
+          content = re.sub(r"(#include.*?\n)(?!#include)", r"\1" + patch_code, content, count=1)
 
-          # 2. Подменяем вызовы в коде на наши эмулированные версии
-          content = content.replace("clCreateBufferWithProperties", "clCreateBuffer_Emulated")
-
-          # 3. Маскировка Mali под Intel
+          # 2. Маскировка Mali под Intel (для прохождения проверок в коде)
           content = content.replace("strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
                                     "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))")
 
-          # 4. Вставка макросов эмуляции субгрупп для КЕРНЕЛОВ (в параметры строки компиляции)
+          # 3. Инъекция макросов эмуляции субгрупп в параметры компилятора кернелов
           mali_macros = (" -Dcl_khr_subgroups -Dget_sub_group_id()=0 -Dget_sub_group_local_id()=0 "
                          "-Dsub_group_reduce_add(x)=(x) -Dsub_group_any(x)=(x) -Dsub_group_all(x)=(x) "
                          "-DN_SIMDGROUP=1 -DN_SIMDWIDTH=1 -DN_DST=1 ")
           
           content = content.replace("-cl-std=CL2.0", "-cl-std=CL2.0 " + mali_macros)
 
-          # 5. Отключаем прагму в строковых литералах кернелов
-          content = content.replace("#pragma OPENCL EXTENSION cl_khr_subgroups : enable", 
-                                    "// #pragma OPENCL EXTENSION cl_khr_subgroups : disabled")
+          # 4. Нейтрализация прагмы расширения в исходниках самих кернелов
+          # Мы просто переименовываем расширение, чтобы прагма стала безобидной
+          content = content.replace("cl_khr_subgroups", "cl_khr_subgroups_DISABLED_BY_PATCH")
 
           with open(file_path, "w") as f:
               f.write(content)
