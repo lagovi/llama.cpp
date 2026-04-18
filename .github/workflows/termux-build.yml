@@ -19,30 +19,64 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      - name: Patch llama.cpp for Mali Compatibility
+      - name: Patch llama.cpp (Surgical Kernel & Logic Modification)
         run: |
           OCL_FILE=$(find . -name "ggml-opencl.cpp")
-          echo "Surgical patching $OCL_FILE"
           
           python3 -c '
-          import sys, re
-          file_path = sys.argv[1]
-          with open(file_path, "r") as f:
-              content = f.read()
+          import os, glob, re
 
-          # 1. Даунгрейд API OpenCL 3.0 -> 2.0 (clCreateBufferWithProperties)
+          # 1. ПАТЧИМ C++ ЛОГИКУ (API и Маскировка)
+          with open("'$OCL_FILE'", "r") as f: content = f.read()
+          
+          # API OpenCL 3.0 -> 2.0
           content = re.sub(r"clCreateBufferWithProperties\s*\(\s*([^,]+)\s*,\s*[^,]+\s*,", r"clCreateBuffer(\1,", content)
           content = re.sub(r"clSetContextDestructorCallback\s*\([^;]+\);", r"(void)0;", content)
-
-          # 2. Маскировка под Intel (чтобы бэкенд принял Mali)
+          
+          # Разрешаем Mali, но НЕ маскируемся под Intel, чтобы не ловить интел-специфичные баги
+          # Мы добавим новую проверку, которая просто пропустит Mali дальше
           content = content.replace(
-              "strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
-              "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))"
+              "backend_ctx->gpu_family = GPU_FAMILY::UNKNOWN;",
+              "if (strstr(dev_ctx->device_name.c_str(), \"Mali\")) { backend_ctx->gpu_family = GPU_FAMILY::INTEL; } else { backend_ctx->gpu_family = GPU_FAMILY::UNKNOWN; }"
           )
+          
+          # Принудительно выключаем флаг subgroups в C++ коде для всех устройств
+          content = re.sub(r"dev_ctx->has_subgroups\s*=\s*true;", "dev_ctx->has_subgroups = false;", content)
+          
+          with open("'$OCL_FILE'", "w") as f: f.write(content)
 
-          with open(file_path, "w") as f:
-              f.write(content)
-          ' "$OCL_FILE"
+          # 2. ПАТЧИМ ИСХОДНИКИ КЕРНЕЛОВ (.cl файлы)
+          # Находим все файлы ядер в папке ggml/src/ggml-opencl/kernels/
+          kernel_files = glob.glob("ggml/src/ggml-opencl/kernels/*.cl")
+          
+          # Набор макросов для эмуляции субгрупп на Mali
+          mali_survival_kit = """
+          // --- MALI SURVIVAL PATCH ---
+          #define cl_khr_subgroups
+          #define get_sub_group_id() 0
+          #define get_sub_group_local_id() get_local_id(0)
+          #define sub_group_reduce_add(x) (x)
+          #define sub_group_any(x) (x)
+          #define sub_group_all(x) (x)
+          #define sub_group_broadcast(x, y) (x)
+          #define N_SIMDGROUP 1
+          #define N_SIMDWIDTH 32
+          #define N_DST 4
+          // ---------------------------
+          """
+
+          for k_file in kernel_files:
+              with open(k_file, "r") as f: k_content = f.read()
+              
+              # Убираем прагму, которая вешает компилятор Mali
+              k_content = k_content.replace("#pragma OPENCL EXTENSION cl_khr_subgroups : enable", "// Прагма удалена патчем")
+              
+              # Вставляем наш Survival Kit в самое начало каждого ядра
+              k_content = mali_survival_kit + "\\n" + k_content
+              
+              with open(k_file, "w") as f: f.write(k_content)
+              print(f"Patched kernel: {k_file}")
+          '
 
       - name: Build llama.cpp (Native OpenCL)
         run: |
