@@ -36,13 +36,13 @@ jobs:
           echo "CLBLAST_DIR=$(pwd)" >> $GITHUB_ENV
           echo "CLBLAST_INC=$(pwd)/../include" >> $GITHUB_ENV
 
-      # 3. Скачиваем свежий llama.cpp и патчи AUR + Доработка патчей
+      # 3. Скачиваем свежий llama.cpp и патчи AUR + Хирургия патчей
       - name: Prepare llama.cpp and apply AUR Patches
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
           cd llama.cpp
           
-          # Скачиваем патчи
+          # Скачиваем патчи AUR
           wget -q "https://aur.archlinux.org/cgit/aur.git/plain/0001-add-clblast-to-cmake.patch?h=llama.cpp-clblast" -O 0001.patch
           wget -q "https://aur.archlinux.org/cgit/aur.git/plain/0002-add-clblast-header.patch?h=llama.cpp-clblast" -O 0002.patch
           
@@ -50,15 +50,21 @@ jobs:
           patch -p1 < 0001.patch
           patch -p1 < 0002.patch
 
-          # --- ХАК: Дорабатываем патч AUR под наши реалии ---
-          # 1. Заменяем "-lclblast" на прямую переменную пути к библиотеке
-          # 2. Добавляем путь к инклудам CLBlast, чтобы компилятор не терялся
+          # --- ХИРУРГИЯ: Убираем зависимость от автоматического поиска CMake ---
+          # 1. Удаляем вызов find_package(CLBlast), чтобы он не затирал наши переменные
+          sed -i '/find_package(CLBlast QUIET)/d' ggml/src/ggml-blas/CMakeLists.txt
+          
+          # 2. Убираем условие "AND CLBlast_FOUND", оставляем только проверку вендора
+          sed -i 's/AND CLBlast_FOUND//g' ggml/src/ggml-blas/CMakeLists.txt
+          
+          # 3. Принудительно прописываем пути к либе и инклудам
+          # Мы заменяем "-lclblast" на переменную и добавляем инклуды прямо в цель ggml-blas
           sed -i 's/target_link_libraries(ggml-blas PRIVATE "-lclblast")/target_link_libraries(ggml-blas PRIVATE "${CLBlast_LIBRARY}")/g' ggml/src/ggml-blas/CMakeLists.txt
           sed -i '/target_link_libraries(ggml-blas PRIVATE "${CLBlast_LIBRARY}")/i \    target_include_directories(ggml-blas PRIVATE "${CLBlast_INCLUDE_DIR}")' ggml/src/ggml-blas/CMakeLists.txt
           
           echo "LLAMA_DIR=$(pwd)" >> $GITHUB_ENV
 
-      # 4. Сборка свежего llama.cpp с CLBlast BLAS (Исправленная команда)
+      # 4. Сборка свежего llama.cpp с CLBlast BLAS (Финальный штурм)
       - name: Build llama.cpp
         run: |
           cd $LLAMA_DIR
@@ -71,7 +77,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_BLAS=ON \
             -DGGML_BLAS_VENDOR=CLBlast \
-            -DCLBlast_FOUND=ON \
             -DCLBlast_INCLUDE_DIR=${{ env.CLBLAST_INC }} \
             -DCLBlast_LIBRARY=${{ env.CLBLAST_DIR }}/libclblast.so \
             -DOpenCL_INCLUDE_DIR=${{ env.OPENCL_INC_DIR }} \
