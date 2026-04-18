@@ -1,4 +1,4 @@
-name: Termux Build (Modern llama.cpp + CLBlast)
+name: Termux Build (Native OpenCL - Compatibility Mode)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. Подготовка OpenCL Stub (Ваш старый добрый хак)
       - name: Prepare OpenCL Stub
         run: |
           git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers.git opencl-inc
@@ -20,80 +19,53 @@ jobs:
           echo "OPENCL_INC_DIR=$(pwd)/opencl-inc" >> $GITHUB_ENV
           echo "OPENCL_STUB_LIB=$(pwd)/libOpenCL.so" >> $GITHUB_ENV
 
-      # 2. Сборка CLBlast под Android
-      - name: Build CLBlast
+      - name: Patch llama.cpp for Mali Compatibility
         run: |
-          git clone --depth 1 https://github.com/CNugteren/CLBlast.git
-          cd CLBlast && mkdir build && cd build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-29 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOPENCL_INCLUDE_DIRS=$OPENCL_INC_DIR \
-            -DOPENCL_LIBRARIES=$OPENCL_STUB_LIB
-          make -j$(nproc)
-          echo "CLBLAST_DIR=$(pwd)" >> $GITHUB_ENV
-          echo "CLBLAST_INC=$(pwd)/../include" >> $GITHUB_ENV
+          OCL_FILE=$(find . -name "ggml-opencl.cpp")
+          echo "Surgical patching $OCL_FILE"
+          
+          python3 -c '
+          import sys, re
+          file_path = sys.argv[1]
+          with open(file_path, "r") as f:
+              content = f.read()
 
-      # 3. Скачиваем свежий llama.cpp и патчи AUR + Хирургия патчей
-      - name: Prepare llama.cpp and apply AUR Patches
+          # 1. Даунгрейд API OpenCL 3.0 -> 2.0 (clCreateBufferWithProperties)
+          content = re.sub(r"clCreateBufferWithProperties\s*\(\s*([^,]+)\s*,\s*[^,]+\s*,", r"clCreateBuffer(\1,", content)
+          content = re.sub(r"clSetContextDestructorCallback\s*\([^;]+\);", r"(void)0;", content)
+
+          # 2. Маскировка под Intel (чтобы бэкенд принял Mali)
+          content = content.replace(
+              "strstr(dev_ctx->device_name.c_str(), \"Intel\")", 
+              "(strstr(dev_ctx->device_name.c_str(), \"Intel\") || strstr(dev_ctx->device_name.c_str(), \"Mali\"))"
+          )
+
+          with open(file_path, "w") as f:
+              f.write(content)
+          ' "$OCL_FILE"
+
+      - name: Build llama.cpp (Native OpenCL)
         run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
-          cd llama.cpp
-          
-          # Скачиваем патчи AUR
-          wget -q "https://aur.archlinux.org/cgit/aur.git/plain/0001-add-clblast-to-cmake.patch?h=llama.cpp-clblast" -O 0001.patch
-          wget -q "https://aur.archlinux.org/cgit/aur.git/plain/0002-add-clblast-header.patch?h=llama.cpp-clblast" -O 0002.patch
-          
-          # Применяем оригинальные патчи
-          patch -p1 < 0001.patch
-          patch -p1 < 0002.patch
-
-          # --- ХИРУРГИЯ: Убираем зависимость от автоматического поиска CMake ---
-          # 1. Удаляем вызов find_package(CLBlast), чтобы он не затирал наши переменные
-          sed -i '/find_package(CLBlast QUIET)/d' ggml/src/ggml-blas/CMakeLists.txt
-          
-          # 2. Убираем условие "AND CLBlast_FOUND", оставляем только проверку вендора
-          sed -i 's/AND CLBlast_FOUND//g' ggml/src/ggml-blas/CMakeLists.txt
-          
-          # 3. Принудительно прописываем пути к либе и инклудам
-          # Мы заменяем "-lclblast" на переменную и добавляем инклуды прямо в цель ggml-blas
-          sed -i 's/target_link_libraries(ggml-blas PRIVATE "-lclblast")/target_link_libraries(ggml-blas PRIVATE "${CLBlast_LIBRARY}")/g' ggml/src/ggml-blas/CMakeLists.txt
-          sed -i '/target_link_libraries(ggml-blas PRIVATE "${CLBlast_LIBRARY}")/i \    target_include_directories(ggml-blas PRIVATE "${CLBlast_INCLUDE_DIR}")' ggml/src/ggml-blas/CMakeLists.txt
-          
-          echo "LLAMA_DIR=$(pwd)" >> $GITHUB_ENV
-
-      # 4. Сборка свежего llama.cpp с CLBlast BLAS (Финальный штурм)
-      - name: Build llama.cpp
-        run: |
-          cd $LLAMA_DIR
           mkdir build && cd build
-          
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release \
-            -DGGML_BLAS=ON \
-            -DGGML_BLAS_VENDOR=CLBlast \
-            -DCLBlast_INCLUDE_DIR=${{ env.CLBLAST_INC }} \
-            -DCLBlast_LIBRARY=${{ env.CLBLAST_DIR }}/libclblast.so \
+            -DGGML_OPENCL=ON \
+            -DGGML_OPENCL_USE_ADRENO_KERNELS=OFF \
             -DOpenCL_INCLUDE_DIR=${{ env.OPENCL_INC_DIR }} \
             -DOpenCL_LIBRARY=${{ env.OPENCL_STUB_LIB }} \
             -DGGML_OPENMP=OFF \
             -DLLAMA_BUILD_EXAMPLES=ON \
             -DLLAMA_BUILD_TESTS=OFF
-
           make -j$(nproc) llama-cli llama-bench
 
-      # 5. Упаковка артефактов
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-clblast-aur
+          name: llama-opencl-native
           path: |
-            ${{ env.LLAMA_DIR }}/build/bin/llama-cli
-            ${{ env.LLAMA_DIR }}/build/bin/llama-bench
-            ${{ env.LLAMA_DIR }}/build/bin/*.so*
-            ${{ env.CLBLAST_DIR }}/libclblast.so*
+            build/bin/llama-cli
+            build/bin/llama-bench
+            build/bin/*.so*
